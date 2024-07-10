@@ -1,6 +1,6 @@
-name: CI
+name: Terraform Plan and Apply
 
-on: 
+on:
   push:
     branches:
       - main
@@ -8,21 +8,54 @@ on:
       - qa
       - prod
 
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
-  build:
+  terraform:
+    name: Terraform Plan and Apply
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v2
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-    - name: Set up Node.js
-      uses: actions/setup-node@v2
-      with:
-        node-version: '14'
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v1
+        with:
+          terraform_version: 1.5.2
 
-    - name: Install dependencies
-      run: npm install
+      - name: Configure AWS credentials from secrets
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
-    - name: Run tests
-      run: npm test
+      - name: Load Environment Variables
+        run: |
+          if [ "${{ github.ref }}" == "refs/heads/dev" ]; then
+            ENV_FILE=".env-dev"
+          elif [ "${{ github.ref }}" == "refs/heads/qa" ]; then
+            ENV_FILE=".env-qa"
+          elif [ "${{ github.ref }}" == "refs/heads/prod" ]; then
+            ENV_FILE=".env-prod"
+          fi
+          source $ENV_FILE
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Terraform Init
+        run: terraform init -backend-config="bucket=${TERRAFORM_S3_BUCKET_NAME}" -backend-config="key=${TERRAFORM_STATE_FILE_KEY}" -backend-config="region=${AWS_REGION}" -backend-config="dynamodb_table=${TERRAFORM_STATE_LOCK_DYNAMODB_TABLE}"
+
+      - name: Terraform Plan
+        run: terraform plan -var-file="terraform.tfvars"
+
+      - name: Terraform Apply
+        if: github.event_name == 'workflow_dispatch'
+        run: terraform apply -auto-approve -var-file="terraform.tfvars"
+        env:
+          TF_VAR_vpc_cidr: ${{ secrets.VPC_CIDR }}
+          TF_VAR_instance_type: ${{ secrets.INSTANCE_TYPE }}
+          TF_VAR_bucket_name: ${{ secrets.BUCKET_NAME }}
